@@ -1,0 +1,6 @@
+build/
+cmake-build-*/
+CMakeUserPresets.json
+CMakeLists.txt.user*
+stock_tree.csv
+option_tree.csv

@@ -1,24 +1,18 @@
 cmake_minimum_required(VERSION 3.16)
+project(OptionPricer LANGUAGES CXX)
 
-project(BinaryOptionsPricing LANGUAGES CXX)
+add_library(option-pricing pricing.cpp)
+target_compile_features(option-pricing PUBLIC cxx_std_17)
 
-set(CMAKE_AUTOUIC ON)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
+add_executable(option-pricer main.cpp)
+target_link_libraries(option-pricer PRIVATE option-pricing)
+install(TARGETS option-pricer RUNTIME DESTINATION bin)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core)
-
-add_executable(BinaryOptionsPricing
-  main.cpp
-)
-target_link_libraries(BinaryOptionsPricing Qt${QT_VERSION_MAJOR}::Core)
-
-include(GNUInstallDirs)
-install(TARGETS BinaryOptionsPricing
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(pricing-tests pricing_tests.cpp)
+    target_link_libraries(pricing-tests PRIVATE option-pricing)
+    add_test(NAME pricing COMMAND pricing-tests)
+    add_test(NAME cli-example COMMAND option-pricer)
+    set_tests_properties(cli-example PROPERTIES PASS_REGULAR_EXPRESSION "Black-Scholes: 10.450584")
+endif()

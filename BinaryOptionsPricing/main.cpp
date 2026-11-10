@@ -1,121 +1,99 @@
-#include <iostream>
-#include <vector>
-#include <cmath>
+#include "pricing.hpp"
+
+#include <exception>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 
-using namespace std;
+namespace {
 
-int index(int t, int i) {
-    return t * (t + 1) / 2 + i;
+void usage(std::ostream& stream) {
+    stream << "Usage: option-pricer [spot strike years rate volatility steps call|put european|american [--export-tree]]\n"
+           << "Rates and volatility are decimals. Run without arguments for a sample.\n";
 }
 
-double normalCDF(double x) {
-    return 0.5 * erfc(-x * M_SQRT1_2); // Standard normal CDF using error function
+double number(const char* text) {
+    std::size_t parsed = 0;
+    const double result = std::stod(text, &parsed);
+    if (text[parsed] != '\0') {
+        throw std::invalid_argument("Invalid numeric argument.");
+    }
+    return result;
 }
 
-double blackScholesPrice(double S, double K, double T, double r, double sigma, bool isCall) {
-    double d1 = (log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrt(T));
-    double d2 = d1 - sigma * sqrt(T);
-    if (isCall)
-        return S * normalCDF(d1) - K * exp(-r * T) * normalCDF(d2);
-    else
-        return K * exp(-r * T) * normalCDF(-d2) - S * normalCDF(-d1);
+int step_count(const char* text) {
+    std::size_t parsed = 0;
+    const int result = std::stoi(text, &parsed);
+    if (text[parsed] != '\0') {
+        throw std::invalid_argument("Steps must be an integer.");
+    }
+    return result;
 }
 
-void exportTreeCSV(const vector<double>& tree, int N, const string& filename) {
-    ofstream file(filename);
-    for (int t = 0; t <= N; ++t) {
-        for (int i = 0; i <= t; ++i) {
-            file << tree[index(t, i)];
-            if (i != t) file << ",";
+void write_csv(const char* filename, const std::vector<std::vector<double>>& levels) {
+    std::ofstream out(filename);
+    out << std::setprecision(17);
+    for (const auto& level : levels) {
+        out << level.front();
+        for (std::size_t j = 1; j < level.size(); ++j) {
+            out << ',' << level[j];
         }
-        file << "\n";
+        out << '\n';
     }
-    file.close();
-}
-
-void printTree(const vector<double>& tree, int N, const string& label) {
-    cout << "\n" << label << " Tree:\n";
-    for (int t = 0; t <= N; ++t) {
-        cout << "t=" << t << ": ";
-        for (int i = 0; i <= t; ++i) {
-            cout << fixed << setprecision(2) << tree[index(t, i)] << " ";
-        }
-        cout << "\n";
+    out.close();
+    if (!out) {
+        throw std::runtime_error(std::string("Could not write ") + filename);
     }
 }
 
-double priceOptionBinomial(
-    double S0, double K, double T, double r, double sigma,
-    int N, bool isCall, bool isAmerican
-    ) {
-    double dt = T / N;
-    double u = exp(sigma * sqrt(dt));
-    double d = 1.0 / u;
-    double p = (exp(r * dt) - d) / (u - d);
+}  // namespace
 
-    int totalNodes = (N + 1) * (N + 2) / 2;
-    vector<double> stockTree(totalNodes);
-    vector<double> optionTree(totalNodes);
-
-    // Fill stock price tree
-    for (int t = 0; t <= N; ++t) {
-        for (int i = 0; i <= t; ++i) {
-            stockTree[index(t, i)] = S0 * pow(u, i) * pow(d, t - i);
-        }
+int main(int argc, char* argv[]) {
+    using namespace options;
+    if (argc == 2 && std::string_view(argv[1]) == "--help") {
+        usage(std::cout);
+        return 0;
     }
-
-    // Terminal payoffs
-    for (int i = 0; i <= N; ++i) {
-        double ST = stockTree[index(N, i)];
-        optionTree[index(N, i)] = isCall ? max(0.0, ST - K) : max(0.0, K - ST);
+    if (argc != 1 && argc != 9 && argc != 10) {
+        usage(std::cerr);
+        return 2;
     }
-
-    // Backward induction
-    for (int t = N - 1; t >= 0; --t) {
-        for (int i = 0; i <= t; ++i) {
-            double hold = exp(-r * dt) * (p * optionTree[index(t + 1, i + 1)] + (1 - p) * optionTree[index(t + 1, i)]);
-            if (isAmerican) {
-                double exercise = isCall ? max(0.0, stockTree[index(t, i)] - K) : max(0.0, K - stockTree[index(t, i)]);
-                optionTree[index(t, i)] = max(hold, exercise);
-            } else {
-                optionTree[index(t, i)] = hold;
+    try {
+        Contract contract{100.0, 100.0, 1.0, 0.05, 0.20, Payoff::call};
+        int steps = 50;
+        Exercise exercise = Exercise::european;
+        const bool export_tree = argc == 10;
+        if (argc > 1) {
+            const std::string_view payoff = argv[7];
+            const std::string_view style = argv[8];
+            if ((payoff != "call" && payoff != "put") ||
+                (style != "european" && style != "american") ||
+                (export_tree && std::string_view(argv[9]) != "--export-tree")) {
+                throw std::invalid_argument("Use call or put, european or american, and optionally --export-tree.");
             }
+            contract = {number(argv[1]), number(argv[2]), number(argv[3]), number(argv[4]),
+                        number(argv[5]), payoff == "call" ? Payoff::call : Payoff::put};
+            steps = step_count(argv[6]);
+            exercise = style == "european" ? Exercise::european : Exercise::american;
         }
+
+        Lattice lattice;
+        const double price = binomial(contract, steps, exercise, export_tree ? &lattice : nullptr);
+        std::cout << std::fixed << std::setprecision(6)
+                  << "Binomial (" << steps << " steps): " << price << '\n';
+        if (exercise == Exercise::european) {
+            std::cout << "Black-Scholes: " << black_scholes(contract) << '\n';
+        }
+        if (export_tree) {
+            write_csv("stock_tree.csv", lattice.stock);
+            write_csv("option_tree.csv", lattice.option);
+            std::cout << "Wrote stock_tree.csv and option_tree.csv\n";
+        }
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 2;
     }
-
-    // Optional: print and export trees
-    printTree(stockTree, N, "Stock Price");
-    printTree(optionTree, N, "Option Price");
-    exportTreeCSV(stockTree, N, "stock_tree.csv");
-    exportTreeCSV(optionTree, N, "option_tree.csv");
-
-    return optionTree[0];
-}
-
-int main() {
-    // Input parameters
-    double S0 = 100.0;
-    double K = 100.0;
-    double T = 1.0;
-    double r = 0.05;
-    double sigma = 0.2;
-    int N = 50;
-    bool isCall = true;
-    bool isAmerican = false;
-
-    // Price using binomial tree
-    double price = priceOptionBinomial(S0, K, T, r, sigma, N, isCall, isAmerican);
-
-    // Compare with Black-Scholes
-    double bsPrice = blackScholesPrice(S0, K, T, r, sigma, isCall);
-
-    // Output results
-    cout << "\nOption Type: " << (isCall ? "Call" : "Put") << " | "
-         << (isAmerican ? "American" : "European") << "\n";
-    cout << "Binomial Tree Price: " << fixed << setprecision(4) << price << "\n";
-    cout << "Black-Scholes Price: " << fixed << setprecision(4) << bsPrice << "\n";
-
-    return 0;
 }
